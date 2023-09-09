@@ -1,0 +1,239 @@
+# This is an Azure Pipeline that builds our on-prem Nexia Software
+# There are 3 parameters, Test, Release and ReleaseNoVersionInc
+# Ideally, the pipeline runs on a daily cron job, at 3AM eastern, Monday-Friday
+# The cron job will set the parameters, Mon, Tues, Thurs and Friday will be ReleaseNoVersionInc
+# Wednesday will be Release
+# There will be 4 steps, Get Latest from TFS, Build with the bat files, Package with installshield, publish to the file share
+# This will leverage the nexia-hv-build agent from the on-prem agent pool
+
+trigger:
+  - none
+
+# The default value of the buildConfiguration parameter is set to 'ReleaseNoVersionInc' and will be overridden by the cron job
+parameters:
+  - name: buildConfiguration
+    displayName: Build Configuration
+    type: string
+    default: ReleaseNoVersionInc
+    values:
+      - Test
+      - Release
+      - ReleaseNoVersionInc
+
+variables:
+  - name: Directory
+    value: 'C:\Workspace'
+  - name: ProductDirectory
+    value: '$(Directory)\Fulfillment 17.12 - Release'
+  - name: SymphonyReleaseHV
+    value: '$(Directory)\Symphony HV - Release Independent'
+  - name: SymphonyRelease
+    value: '$(Directory)\Symphony Release-Independent'
+  - name: 3rdParty
+    value: '$(Directory)\3rd Party'
+  - name: StandAlone
+    value: '$(Directory)\Stand-Alone'
+  - name: MapPDrive
+    value: "Map P Drive.bat"
+  - name: buildConfiguration
+    value: ${{ parameters.buildConfiguration }}
+
+stages:
+  - stage: Build
+    displayName: Build
+    jobs:
+      - job: BuildNexia
+        timeoutInMinutes: 180
+        displayName: Building Nexia
+        pool:
+          name: NEXia-OnPrem
+          demands:
+            - Agent.Name -equals
+        steps:
+          - checkout: none
+            clean: true
+          - task: PowerShell@2
+            displayName: "Get Latest from TFS"
+            inputs:
+              targetType: "inline"
+              script: |
+                set-alias tf 'C:\Program Files (x86)\Microsoft Visual Studio\2017\Professional\Common7\IDE\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\TF.exe'
+                tf workspaces /collection:http://*****:8080/tfs/DefaultCollection
+                tf get "$($env:ProductDirectory)" /recursive /noprompt /overwrite
+                tf get "$($env:SymphonyReleaseHV)" /recursive /noprompt /overwrite
+                tf get "$($env:SymphonyRelease)" /recursive /noprompt /overwrite
+                tf get "$($env:3rdParty)" /recursive /noprompt /overwrite
+                tf get "$($env:StandAlone)" /recursive /noprompt /overwrite
+                tf history "$($env:ProductDirectory)" /noprompt /recursive /stopafter:1 /format:detailed
+
+          - task: CmdLine@2
+            displayName: "Building Nexia"
+            inputs:
+              script: 'call Build.bat "%buildConfiguration%"'
+              workingDirectory: '$(ProductDirectory)\BuildUtils'
+            env:
+              buildConfiguration: ${{ parameters.buildConfiguration }}
+
+          - task: PowerShell@2
+            displayName: "Get Latest Version"
+            inputs:
+              targetType: "inline"
+              script: |
+                $Latestversion = Get-Content -Path '.\LastVersionNumber.txt'
+                Write-Host "##vso[task.setvariable variable=Latestversion]$Latestversion"
+              workingDirectory: '$(ProductDirectory)\BuildUtils'
+          # This should only run if the buildConfiguration varialbe is not Test
+          - task: ArchiveFiles@2
+            inputs:
+              rootFolderOrFile: 'C:\Program Files (x86)\PharmAssist'
+              includeRootFolder: false
+              archiveType: "zip"
+              archiveFile: "$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip"
+              replaceExistingArchive: true
+
+          - task: PublishBuildArtifacts@1
+            condition: ne(variables['buildConfiguration'], 'Test')
+            displayName: "Publishing Nexia Zip File"
+            inputs:
+              PathtoPublish: '$(Build.StagingDirectory)\$(Build.BuildId).zip'
+              ArtifactName: "Nexia"
+              publishLocation: "Container"
+
+          - task: PowerShell@2
+            displayName: "Error Search"
+            condition: failed()
+            inputs:
+              targetType: "inline"
+              script: |
+                $ErrorLog = Join-Path -Path $env:PRODUCTDIRECTORY -ChildPath 'BuildUtils\BuildLogs\BuildErrorSummary.log'
+                Write-Host "##vso[build.uploadlog]$ErrorLog"
+  - stage: Package
+    displayName: "Packaging Nexia"
+    jobs:
+      - job: PackageNexia
+        timeoutInMinutes: 180
+        displayName: Packaging Nexia
+        pool:
+          name: NEXia-OnPrem
+          demands:
+            - Agent.Name -equals
+        steps:
+          - checkout: none
+            clean: true
+          - task: PowerShell@2
+            displayName: "Get Latest from TFS"
+            inputs:
+              targetType: "inline"
+              script: |
+                set-alias tf 'C:\Program Files (x86)\Microsoft Visual Studio\2017\Professional\Common7\IDE\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\TF.exe'
+                tf workspaces /collection:http://*****:8080/tfs/DefaultCollection
+                tf get "$($env:ProductDirectory)" /recursive /noprompt /overwrite
+                tf history "$($env:ProductDirectory)" /noprompt /recursive /stopafter:1 /format:detailed 
+                tf get "$($env:SymphonyReleaseHV)" /recursive /noprompt /overwrite
+                tf history "$($env:SymphonyReleaseHV)" /noprompt /recursive /stopafter:1 /format:detailed 
+                tf get "$($env:SymphonyRelease)" /recursive /noprompt /overwrite
+                tf history "$($env:SymphonyRelease)" /noprompt /recursive /stopafter:1 /format:detailed
+
+          - task: PowerShell@2
+            displayName: "Installing Nexia"
+            inputs:
+              targetType: "inline"
+              script: |
+                trap { $host.ui.WriteErrorLine($_.Exception); exit 90 }
+
+                # Query the most recent RELEASE build by using REGEX to only return directories with full version numbers ("17.10.01" instead of DevBuilds)
+                $MostRecentReleaseBuild = (Get-ChildItem -Directory "$env:BUILDARCHIVE" | Sort-Object LastWriteTime -Descending | Where-Object {$_.BaseName  -Match "\d\d.\d\d.\d\d"} | Select-Object -First 1)
+                Write-Host "$MostRecentReleaseBuild"
+                # ###Configurable variables###
+                # # TODO: Staging directory would be where the NEXiA folder is copied down to from T. Likely '$env:Temp\NEXiA...'
+                # # Should that logic be moved into this section?
+                $StagingDirectory = (Join-Path -Path $env:TEMP -ChildPath $MostRecentReleaseBuild.Name)
+
+                "Copying {0} to {1}..." -f $MostRecentReleaseBuild.FullName, $StagingDirectory
+
+                Copy-Item -path $MostRecentReleaseBuild.FullName -Destination $StagingDirectory -Recurse -Force
+
+                # TODO: Ideally, $ExpectedVersion should equal the most recent Release builds setup.exe that is being installed. Check and balance
+
+                $ExpectedVersion = (($MostRecentReleaseBuild) -split " ")[-1]
+
+                $ProductNames = @(
+                  ****
+                )
+
+                ###---------------------###
+                $InstallRegistryContainer = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+                # $InstallRegistryContainer = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
+
+                $ExistingInstalls = Get-ChildItem $InstallRegistryContainer -ErrorAction SilentlyContinue | Get-ItemProperty | Where-Object {($_.DisplayName -in $ProductNames)}
+
+                if ($ExistingInstalls) {
+                    Write-Output "PharmAssist is installed, current version is $($ExistingInstalls.DisplayVersion). Removing..."
+
+                    #Any Symphony executables must be stopped before uninstallation
+                    Stop-Process -Name "*pharmassist*" -Force -ErrorAction Ignore
+                    Stop-Process -Name "pa*" -Force -ErrorAction Ignore
+                    Stop-Process -Name "SAM*" -Force -ErrorAction Ignore
+                    Stop-Process -Name "NEXiA*" -Force -ErrorAction Ignore
+
+                    $UninstallProcess = Start-Process msiexec.exe -ArgumentList "/x $($ExistingInstalls.PSChildName) /qn /norestart" -Wait -PassThru
+                    
+                    if ($UninstallProcess.ExitCode -in '0','1605','1641','3010') {
+                            Write-Output "PharmAssist was successfully uninstalled, cleaning out the P drive..."
+                    } else {
+                            Write-Error "PharmAssist failed to uninstall, not continuing upgrade"
+                            exit 1
+                    }
+                } else {
+                    Write-Output "PharmAssist is not installed, moving to installation..."
+                }
+
+                # Adding a section to clear out the P drive before moving on to the Installation Portion
+                if (Get-ChildItem "${env:ProgramFiles(x86)}\PharmAssist" -ErrorAction SilentlyContinue){
+                    Get-ChildItem "${env:ProgramFiles(x86)}\PharmAssist\*" -Recurse | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -Recurse}
+                    Write-Output "The PharmAssist directory has been emptied, continuing with installation"
+                } else {
+                    Write-Output "PharmAssist folder is clean, installing NEXiA"
+                }
+
+                $SetupPath = Join-Path -Path $MostRecentReleaseBuild -ChildPath 'setup.exe'
+
+                if (Test-Path $SetupPath) {
+                    $Setup = Get-Item -Path $SetupPath
+                    if ($Setup.VersionInfo.ProductVersion -ne $ExpectedVersion) {
+                        Write-Error "Setup version does not match expected version"
+                        exit 2
+                    } else {
+                        Write-Output "Setup found and matches expected version"
+                    }
+                } else {
+                    Write-Error "Could not find setup.exe"
+                    exit 3
+                }
+
+                $InstallProcess = Start-Process $SetupPath -ArgumentList "/S /v`"/qn`"" -Wait -PassThru -NoNewWindow
+                if ($InstallProcess.ExitCode -eq '0') {
+                    Write-Output "Symphony was successfully installed!"
+                } else {
+                    Write-Error "Symphony install returned the following code: $($InstallProcess.ExitCode)" 
+                    exit 4
+                }
+
+            env:
+              BUILDARCHIVE: ""
+          - task: DownloadPipelineArtifact@2
+            displayName: "Downloading Nexia Zip File"
+            inputs:
+              buildType: "current"
+              targetPath: $(Build.ArtifactStagingDirectory)
+
+          - task: PowerShell@2
+            displayName: "Unzipping Nexia"
+            inputs:
+              workingDirectory: "$(Build.ArtifactStagingDirectory)"
+              targetType: "inline"
+              script: |
+                if (-not (Test-Path -Path p:)) {    
+                    subst P: 'C:\Program Files (x86)\PharmAssist'
+                }
+                Expand-Archive -Path ".\Nexia\*.zip" -DestinationPath "P:" -Force -PassThru

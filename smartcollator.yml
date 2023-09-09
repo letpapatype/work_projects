@@ -1,0 +1,107 @@
+trigger:
+  - none
+
+# The default value of the buildConfiguration parameter is set to 'ReleaseNoVersionInc' and will be overridden by the cron job
+parameters:
+  - name: buildConfiguration
+    displayName: Build Configuration
+    type: string
+    default: Debug
+    values:
+      - Debug
+      - Release
+
+variables:
+  - name: Directory
+    value: 'C:\Workspace'
+  - name: ProductDirectory
+    value: '$(Directory)\Stand-Alone'
+  - name: RxCollector
+    value: '$(ProductDirectory)\****\Code\Installed'
+  - name: InstallShieldRoot
+    value: 'C:\Program Files (x86)\InstallShield\2021 SAB'
+
+jobs:
+  - job: BuildSmartCollator
+    timeoutInMinutes: 180
+    displayName: Building Smart Collator
+    pool:
+      name: NEXia-OnPrem
+      demands:
+        - Agent.Name -equals CDBUILD2WIN10VM
+    steps:
+      - checkout: none
+        clean: true
+      - task: PowerShell@2
+        displayName: TFS Get Latest
+        inputs:
+          targetType: "inline"
+          script: |
+            set-alias tf 'C:\Program Files (x86)\Microsoft Visual Studio\2017\Professional\Common7\IDE\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\TF.exe'
+            tf workspaces /collection:http://****:8080/tfs/DefaultCollection
+            tf get "$($env:ProductDirectory)" /recursive /noprompt /overwrite
+            tf history "$($env:ProductDirectory)" /noprompt /recursive /stopafter:1 /format:detailed
+      - task: NuGetCommand@2
+        displayName: NuGet Restore
+        inputs:
+          command: "restore"
+          restoreSolution: '$(RxCollector)\Interfaces - System\RxCollector\RxCollector.sln'
+          feedsToUse: "select"
+          vstsFeed: "***"
+      - task: PowerShell@2
+        # add a condition to only run if the buildConfiguration parameter is set to 'Release'
+        #condition: eq(variables['buildConfiguration'], 'Release')
+        displayName: Version Increment
+        inputs:
+          targetType: "inline"
+          script: |
+            Write-Host "Retrieving the most recent build number..."
+            $SimpleVersion = ((Get-ChildItem -Directory *** | Sort-Object LastWriteTime -Descending | Where-Object {$_.BaseName  -Match "\d\d.\d\d.\d\d"} | Select-Object -First 1) -split "_")[-1]
+            Write-Host "$SimpleVersion is the latest build number"
+
+            $Version = $SimpleVersion -split "\." 
+            $Major = "{0:00}" -f [int]$Version[0]
+            $Minor = "{0:00}" -f [int]$Version[1]
+            $Build = "{0:00}" -f ([int]($Version[2] -split "_")[0] + 1)
+            $Version = "$Major" + "." + "$Minor" + "." + "$Build"
+            Write-Host "The new build number will be $Version. Updating the version number in the Assembly files..."
+
+            $NETProjectGAC = '***'
+            $RxOverallAssembly = '*****'
+
+            $Assembly = @($NETProjectGAC, $RxOverallAssembly)
+
+            Foreach($AssemblyFile in $Assembly)
+            {
+                Set-ItemProperty -path $AssemblyFile -Name IsReadOnly -Value $false -Force
+                (Get-Content "$AssemblyFile") -replace "\d{1,2}\.\d{1,2}\.\d{1,2}\.\d", "$Major.$Minor.$Build.0" | Set-Content $AssemblyFile
+
+            }
+
+            # Get the regex pattern for the version number from the GlobalAssemblyInfo.vb file and set it to a variable $newVersion
+            $newVersion = (Get-Content $NETProjectGAC | Select-String -Pattern "\d{1,2}\.\d{1,2}\.\d{1,2}\.\d" | Select-Object -First 1).Matches.Value
+            Write-Host "The version number in the GlobalAssemblyInfo.vb file has been updated to $newVersion"
+            Write-Host "##vso[task.setvariable variable=$newVersion]$newversion"
+      - task: VSBuild@1
+        displayName: Building RxCollector
+        inputs:
+          solution: '$(RxCollector)\Interfaces - System\***.sln'
+          vsVersion: "15.0"
+          configuration: ${{ parameters.buildConfiguration }}
+          clean: true
+      - task: VSBuild@1
+        displayName: Building RxColOverallVersion
+        inputs:
+          solution: '$(RxCollector)\Main Components\****.sln'
+          vsVersion: "15.0"
+          configuration: ${{ parameters.buildConfiguration }}
+          clean: true
+      - task: InstallShieldBuild@1
+        # only run if the buildConfiguration parameter is set to 'Release'
+        condition: eq(variables['buildConfiguration'], 'Release')
+        displayName: Packaging SmartCollator
+        inputs:
+          PrjName: '$(ProductDirectory)\****.ism'
+          Parameters: '-e Y -r "SmartCollator" -o "$(InstallShieldRoot)\Modules\i386,$(InstallShieldRoot)\Objects"'
+          AgentLoc: "PrivateAgent"
+          SABPath: "$(InstallShieldRoot)"
