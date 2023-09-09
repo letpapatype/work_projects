@@ -1,0 +1,72 @@
+trigger:
+  branches:
+    include:
+      - "synapsews_publish"
+
+stages:
+  - stage: Deploy_Synapse
+    displayName: "Synapse Deployment"
+    pool:
+      vmImage: "ubuntu-latest"
+    jobs:
+      - job: Synapse_Deployment
+        steps:
+          - checkout: self
+            clean: true
+          - task: toggle-triggers-dev@2
+            displayName: "Toggle Dev Triggers Off"
+            inputs:
+              azureSubscription: "Development"
+              ResourceGroupName: "rg-sta-be-dev"
+              WorkspaceName: "synw-sta-dev"
+              ToggleOn: false
+              Triggers: "*"
+          - task: Synapse workspace deployment@2
+            displayName: "Dev Deployment"
+            inputs:
+              operation: "deploy"
+              TemplateFile: "$(Build.SourcesDirectory)/synw-sta-dev/TemplateForWorkspace.json"
+              ParametersFile: "$(Build.SourcesDirectory)/synw-sta-dev/TemplateParametersForWorkspace.json"
+              azureSubscription: "Development"
+              ResourceGroupName: "rg-sta-be-dev"
+              TargetWorkspaceName: "synw-sta-dev"
+              DeleteArtifactsNotInTemplate: false
+              DeployManagedPrivateEndpoints: false
+              FailOnMissingOverrides: false
+          - task: toggle-triggers-dev@2
+            displayName: "Toggle DEV Triggers ON"
+            inputs:
+              azureSubscription: "Development"
+              ResourceGroupName: "rg-sta-be-dev"
+              WorkspaceName: "synw-sta-dev"
+              ToggleOn: true
+              Triggers: "*"
+          - task: toggle-triggers-dev@2
+            displayName: "Toggle QA Triggers OFF"
+            inputs:
+              azureSubscription: "QA"
+              ResourceGroupName: "rg-sta-be-qa"
+              WorkspaceName: "synw-sta-qa"
+              ToggleOn: false
+              Triggers: "*"
+          - task: Synapse workspace deployment@2
+            displayName: "QA Deployment"
+            inputs:
+              operation: "deploy"
+              TemplateFile: "$(Build.SourcesDirectory)/synw-sta-dev/TemplateForWorkspace.json"
+              ParametersFile: "$(Build.SourcesDirectory)/synw-sta-dev/TemplateParametersForQAWorkspace.json"
+              azureSubscription: "QA"
+              ResourceGroupName: "rg-sta-be-qa"
+              TargetWorkspaceName: "synw-sta-qa"
+              DeleteArtifactsNotInTemplate: true
+              DeployManagedPrivateEndpoints: false
+              OverrideArmParameters: ""
+              FailOnMissingOverrides: false
+          - task: toggle-triggers-dev@2
+            displayName: "Toggle QA Triggers ON"
+            inputs:
+              azureSubscription: "QA"
+              ResourceGroupName: "rg-sta-be-qa"
+              WorkspaceName: "synw-sta-qa"
+              ToggleOn: true
+              Triggers: "*"
