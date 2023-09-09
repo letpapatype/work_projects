@@ -1,0 +1,86 @@
+trigger:
+  - main
+
+# reference the variable group that contains the RRxCabinet Veracode key
+variables:
+  - group: "veracode"
+
+jobs:
+  - job: BuildAPI
+    timeoutInMinutes: 180
+    displayName: Building Nexia
+    # Use an prem machine
+    pool:
+      name: NEXia-OnPrem
+      demands:
+        - Agent.Name -equals ***
+    steps:
+      # checkout the triggering branch
+      - checkout: self
+        clean: true
+
+      # Restore Nuget packages
+      - task: DotNetCoreCLI@2
+        displayName: Dependency Restore
+        inputs:
+          command: "restore"
+          projects: '$(Build.SourcesDirectory)\*.sln'
+          feedsToUse: "select"
+
+      # Ensure the build is using .NET 6
+      - task: UseDotNet@2
+        displayName: Ensure .NET 6
+        inputs:
+          packageType: "sdk"
+          version: "6.x"
+
+      # Run a debug build for Veracode Agent scanning
+      - task: DotNetCoreCLI@2
+        displayName: "Build RRxCabinetAPI"
+        inputs:
+          command: "publish"
+          publishWebProjects: false
+          projects: '$(Build.SourcesDirectory)\*.sln'
+          arguments: '--configuration Debug --output $(Build.SourcesDirectory)\Debug'
+          zipAfterPublish: false
+          modifyOutputPath: false
+        env:
+          BUILD_NUMBER: $(Build.BuildID)
+
+      # Run the veracode agent scan
+      - task: PowerShell@2
+        displayName: Veracode Agent Scan
+        inputs:
+          targetType: "inline"
+          script: 'iex ((New-Object System.Net.WebClient).DownloadString("https://download.srcclr.com/ci.ps1")); srcclr scan --allow-dirty'
+          workingDirectory: "$(Build.SourcesDirectory)"
+        env:
+          SRCCLR_API_TOKEN: $()
+
+      # Run the dotnet publish
+      - task: DotNetCoreCLI@2
+        displayName: "Build RRxCabinetAPI"
+        inputs:
+          command: "publish"
+          publishWebProjects: false
+          projects: '$(Build.SourcesDirectory)\*.sln'
+          arguments: "--configuration Release --output "
+          zipAfterPublish: false
+          modifyOutputPath: false
+        env:
+          BUILD_NUMBER: $(Build.BuildID)
+
+      - task: DeleteFiles@1
+        displayName: Deleting pdb
+        inputs:
+          SourceFolder: ""
+          Contents: '**\*.pdb'
+
+      # Publish to T
+      - task: CopyFiles@2
+        displayName: Publish to T
+        inputs:
+          SourceFolder: 'C:\inetpub\RRxAPI'
+          Contents: "**"
+          TargetFolder: ""
+          OverWrite: true
