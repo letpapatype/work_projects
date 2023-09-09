@@ -1,0 +1,62 @@
+# This YAML file defines the pipeline for generating ARM templates for Azure Data Factory (ADF) resources.
+# The pipeline has two stages: ARM_Generation and ARM_QA_Generation.
+# The ARM_Generation stage generates ARM templates for the ADF resources in the development environment.
+# The ARM_QA_Generation stage generates ARM templates for the ADF resources in the QA environment.
+# The generated ARM templates are published as build artifacts.
+# The pipeline is triggered when changes are made to the ci-cd branch.
+# The pipeline uses Ubuntu as the build agent.
+# The pipeline requires the following variables to be defined: adf_dev_id, adf_arm_dir, adf_qa_id, adf_arm_dir_qa.
+
+trigger:
+  branches:
+    include:
+      - master
+
+variables:
+  - name: adf_dev_id
+    value:
+  - name: adf_arm_dir
+    value: ArmTemplate
+
+stages:
+  - stage: ARM_Generation
+    displayName: "ARM Template Generation"
+    jobs:
+      - job: Build_ADF_Dev
+        pool:
+          vmImage: "ubuntu-latest"
+        steps:
+          - task: MicrosoftSecurityDevOps@1
+            displayName: "Running Security Scans"
+          - task: Npm@1
+            inputs:
+              command: "install"
+              workingDir: "$(Build.SourcesDirectory)"
+              verbose: true
+            displayName: "Installing Dependencies"
+          - task: Npm@1
+            inputs:
+              command: "custom"
+              workingDir: "$(Build.SourcesDirectory)/"
+              customCommand: "run build validate $(Build.Repository.LocalPath) $(adf_dev_id)"
+              verbose: true
+            displayName: "Validating ADF Resources for Dev"
+          - task: Npm@1
+            inputs:
+              command: "custom"
+              workingDir: "$(Build.SourcesDirectory)/"
+              customCommand: "run build export $(Build.Repository.LocalPath) $(adf_dev_id) $(adf_arm_dir)"
+              verbose: true
+            displayName: "Generate DEV ADF ARM Templates"
+          - task: CopyFiles@2
+            displayName: "Copy Dev ARM Templates"
+            inputs:
+              SourceFolder: "$(adf_arm_dir)"
+              Contents: "**"
+              TargetFolder: "$(Build.ArtifactStagingDirectory)/$(adf_arm_dir)"
+          - task: PublishBuildArtifacts@1
+            inputs:
+              targetPath: "$(Build.ArtifactStagingDirectory)/$(adf_arm_dir)"
+              artifactName: "Datafactory_ArmTemplates"
+              publishLocation: "Container"
+            displayName: "Publishing ADF Dev ArmTemplates"

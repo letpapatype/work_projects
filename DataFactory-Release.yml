@@ -1,0 +1,171 @@
+# This YAML file contains the release pipeline for the DataFactory_HighVolume_DEV project.
+# It deploys ARM templates to create or update a resource group and a data factory in the Development and QA environments.
+# The ARM templates and parameters files are downloaded from a specific build of the project.
+# Pre and post deployment scripts are executed using Azure PowerShell tasks.
+trigger:
+  - none
+
+resources:
+  pipelines:
+    - pipeline: DataFactory_HighVolume_DEV
+      source: DataFactory_HighVolume_DEV
+      trigger:
+        branches:
+          include:
+            - master
+
+stages:
+  - stage: ARM_Deployment_Dev
+    displayName: "Deploy ADF Templates - DEV"
+    jobs:
+      - job: ArmTemplate_Deployment
+        pool:
+          vmImage: "ubuntu-latest"
+        steps:
+          - task: DownloadPipelineArtifact@2
+            displayName: "Download ARM Templates"
+            inputs:
+              buildType: "specific"
+              project: $(resources.pipeline.DataFactory_HighVolume_DEV.projectID)
+              definition: "136"
+              specificBuildWithTriggering: true
+              buildVersionToDownload: "latest"
+              artifactName: "Datafactory_ArmTemplates"
+              targetPath: "$(Build.SourcesDirectory)"
+          # User azurepowershell to run the prepostdeploymentscript.ps1 using powershell core
+          - task: AzurePowerShell@5
+            displayName: "Predepoyment"
+            inputs:
+              azureSubscription: "Development"
+              ScriptType: "FilePath"
+              ScriptPath: "$(Build.SourcesDirectory)/ArmTemplate/PrePostDeploymentScript.ps1"
+              ScriptArguments: ""
+              azurePowerShellVersion: "LatestVersion"
+              pwsh: true
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: "Deploying Templates to ADF"
+            inputs:
+              deploymentScope: "Resource Group"
+              azureResourceManagerConnection: "Development"
+              subscriptionId: ""
+              action: "Create Or Update Resource Group"
+              resourceGroupName: "rg-sta-be-dev"
+              location: "East US 2"
+              templateLocation: "Linked artifact"
+              csmFile: "$(Build.SourcesDirectory)/ArmTemplate/ARMTemplateForFactory.json"
+              csmParametersFile: "$(Build.SourcesDirectory)/ArmTemplate/ARMTemplateParametersForFactory.json"
+              deploymentMode: "Incremental"
+          - task: AzurePowerShell@5
+            displayName: "Postdepoyment"
+            inputs:
+              azureSubscription: "Development"
+              ScriptType: "FilePath"
+              ScriptPath: "$(Build.SourcesDirectory)/ArmTemplate/PrePostDeploymentScript.ps1"
+              ScriptArguments: ""
+              azurePowerShellVersion: "LatestVersion"
+              pwsh: true
+  - stage: ARM_Deployment_QA
+    displayName: "Deploy ADF Templates - QA"
+    jobs:
+      - job: ArmTemplate_Deployment
+        pool:
+          vmImage: "ubuntu-latest"
+        steps:
+          - task: DownloadPipelineArtifact@2
+            displayName: "Download ARM Templates"
+            inputs:
+              buildType: "specific"
+              project: $(resources.pipeline.DataFactory_HighVolume_DEV.projectID)
+              definition: "136"
+              specificBuildWithTriggering: true
+              buildVersionToDownload: "latest"
+              artifactName: "Datafactory_ArmTemplates"
+              targetPath: "$(Build.SourcesDirectory)"
+          - task: AzurePowerShell@5
+            displayName: "Predepoyment"
+            inputs:
+              azureSubscription: "QA"
+              ScriptType: "FilePath"
+              ScriptPath: "$(Build.SourcesDirectory)/ArmTemplate/PrePostDeploymentScript.ps1"
+              ScriptArguments: ""
+              azurePowerShellVersion: "LatestVersion"
+              pwsh: true
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: "Deploying Templates to ADF"
+            inputs:
+              deploymentScope: "Resource Group"
+              azureResourceManagerConnection: "QA"
+              subscriptionId: ""
+              action: "Create Or Update Resource Group"
+              resourceGroupName: "rg-sta-be-qa"
+              location: "East US"
+              templateLocation: "Linked artifact"
+              csmFile: "$(Build.SourcesDirectory)/ArmTemplate/ARMTemplateForFactory.json"
+              deploymentMode: "Incremental"
+              overrideParameters: ""
+          - task: AzurePowerShell@5
+            displayName: "Postdepoyment"
+            inputs:
+              azureSubscription: "QA"
+              ScriptType: "FilePath"
+              ScriptPath: "$(Build.SourcesDirectory)/ArmTemplate/PrePostDeploymentScript.ps1"
+              ScriptArguments: ""
+              azurePowerShellVersion: "LatestVersion"
+              pwsh: true
+      - job: Approval_Gate
+        displayName: "Production Approval Gate"
+        pool: server
+        steps:
+          - task: ManualValidation@0
+            inputs:
+              notifyUsers: |
+
+              instructions: "The Data Factory deployment to QA has been completed. Please review the deployment and approve or reject the deployment to Production."
+  - stage: ARM_Deployment_Prod
+    displayName: "Deploy ADF Templates - Production"
+    jobs:
+      - job: ArmTemplate_Deployment
+        pool:
+          vmImage: "ubuntu-latest"
+        steps:
+          - task: DownloadPipelineArtifact@2
+            displayName: "Download ARM Templates"
+            inputs:
+              buildType: "specific"
+              project: $(resources.pipeline.DataFactory_HighVolume_DEV.projectID)
+              definition: "136"
+              specificBuildWithTriggering: true
+              buildVersionToDownload: "latest"
+              artifactName: "Datafactory_ArmTemplates"
+              targetPath: "$(Build.SourcesDirectory)"
+          - task: AzurePowerShell@5
+            displayName: "Predepoyment"
+            inputs:
+              azureSubscription: Production
+              ScriptType: "FilePath"
+              ScriptPath: "$(Build.SourcesDirectory)/ArmTemplate/PrePostDeploymentScript.ps1"
+              ScriptArguments: ""
+              azurePowerShellVersion: "LatestVersion"
+              pwsh: true
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: "Deploying Templates to ADF"
+            inputs:
+              deploymentScope: "Resource Group"
+              azureResourceManagerConnection: Production
+              subscriptionId: ""
+              action: "Create Or Update Resource Group"
+              resourceGroupName: "rg-sta-be-prod"
+              location: "Central US"
+              templateLocation: "Linked artifact"
+              csmFile: "$(Build.SourcesDirectory)/ArmTemplate/ARMTemplateForFactory.json"
+              deploymentMode: "Incremental"
+              overrideParameters: ""
+          - task: AzurePowerShell@5
+            displayName: "Postdepoyment"
+            inputs:
+              azureSubscription: Production
+              ScriptType: "FilePath"
+              ScriptPath: "$(Build.SourcesDirectory)/ArmTemplate/PrePostDeploymentScript.ps1"
+              ScriptArguments: ""
+              azurePowerShellVersion: "LatestVersion"
+              pwsh: true
