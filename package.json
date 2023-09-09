@@ -1,0 +1,36 @@
+{
+  "name": "nexiadatapump",
+  "version": "1.6.5",
+  "description": "NexiaDataPump is a stand alone service.  It is a configurable data extract utility that will utilize read-only credentials to retrieve data from a production environment and securely transport that data to the cloud for further processing.",
+  "main": "./src/index.js",
+  "scripts": {
+    "start": "node ./src/index.js",
+    "build": "javascript-obfuscator --exclude node_modules --output ./build .",
+    "test": "nodemon -i ./src/configFiles ./src/index.js",
+    "update": "npm-check-updates --upgrade; npm install"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@azure/keyvault-secrets": "^4.7.0",
+    "@azure/storage-blob": "^12.15.0",
+    "@shelf/fast-chunk-string": "^3.0.0",
+    "axios": "^1.5.0",
+    "crypto-js": "^4.1.1",
+    "dotenv": "^16.3.1",
+    "json2csv": "^5.0.6",
+    "knex": "^2.5.1",
+    "moment": "^2.29.4",
+    "mssql": "^10.0.0",
+    "node-cron": "^3.0.2"
+  },
+  "devDependencies": {
+    "eslint": "^8.48.0",
+    "eslint-config-airbnb-base": "^15.0.0",
+    "eslint-plugin-import": "^2.28.1"
+  }
+}

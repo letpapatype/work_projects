@@ -1,0 +1,90 @@
+# This pipeline should only trigger when there is a pr created to dev or release
+trigger:
+ branches:
+   include:
+     - '*'
+
+# variables with be determined by the pr branch name. if the branch name is release, the variables group will be set to production, otherwise, it will be set to dev
+variables:
+  - group: nexia-sta-production
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+  # Needed for production publishing only. Production service principle is used to disable to ACR firewall from ephemeral build machines
+- stage: DisableFW
+  condition: eq(variables['Build.SourceBranchName'], 'release')
+  displayName: Disable CR Firewall
+  jobs:
+    - job: DisableFW
+      displayName: DisableFW
+      steps:
+        - task: AzureCLI@2
+          displayName: Disable Firewall
+          inputs:
+            azureSubscription: $(sta-prod-conn)
+            scriptLocation: inlineScript
+            scriptType: bash
+            inlineScript: |
+              az acr update -n $(sta-prod-registry) \
+                -g $(sta-prod-rg) \
+                --public-network-enabled true \
+                --default-action Allow \
+                --subscription $(sta-prod-subid)
+# Build and publish the image to the container registry, with the registry determined by the variables group
+# The only tagging currently done is the release version, which is pulled from the package.json file
+# The repository name is determined by the branch name, with the release branch publishing to the root of the registry
+- stage: Build
+  condition: always()
+  displayName: Build and Push
+  jobs: 
+    - job: Build
+      displayName: Build and Push
+      steps:
+      - task: PowerShell@2
+        displayName: Version set up for Release Build
+        inputs:
+          targetType: 'inline'
+          script: |
+            $Package = Get-Content .\package.json | ConvertFrom-Json
+            $RelVersion = $Package.version
+            Write-Host "##vso[task.setvariable variable=RelVersion;]$RelVersion"
+      - task: Docker@2
+        displayName: Build and push an image to container registry
+        inputs:
+          command: buildAndPush
+          ${{ if eq(variables['Build.SourceBranchName'], 'release') }}:
+            containerRegistry: $(sta-prod-registry)
+            repository: nexia-sta-image
+            tags: 'latest'
+          ${{ else }}:
+            containerRegistry: $(sta-dev-registry)
+            repository: nexia-sta-image/$(Build.SourceBranchName)
+            tags: '$(RelVersion)'
+          dockerfile: ./Dockerfile   
+      # Adding Microsoft Defender scan to the end of the build process
+      - task: MicrosoftSecurityDevOps@1
+        displayName: 'Microsoft Defender Scan'
+
+# Post image publishing, the production ACR firewall is re-enabled
+- stage: EnableFW
+  displayName: Enable CR Firewall
+  condition: eq(variables['Build.SourceBranchName'], 'release')
+  jobs:
+    - job: EnableFW
+      displayName: EnableFW
+      steps:
+      - checkout: none
+      - task: AzureCLI@2
+        displayName: Enable Firewall
+        inputs:
+          azureSubscription: $(sta-prod-conn)
+          scriptLocation: inlineScript
+          scriptType: bash
+          inlineScript: |
+            az acr update -n $(sta-prod-registry) \
+              -g $(sta-prod-rg) \
+              --public-network-enabled true \
+              --default-action Deny \
+              --subscription $(sta-prod-subid)
