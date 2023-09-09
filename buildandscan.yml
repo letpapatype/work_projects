@@ -1,0 +1,107 @@
+trigger:
+  - none
+
+schedules:
+  - cron: "0 0 * * 5"
+    displayName: Daily midnight build
+    branches:
+      include:
+        - main
+
+resources:
+  repositories:
+    - repository: all-applications-ui
+      name: ""
+      type: git
+      ref: ""
+    - repository: CloudCore-Hook
+      name: ""
+      type: git
+      ref: "refs/heads/dev"
+    - repository: cs-cross-reference
+      name: ""
+      type: git
+      ref: "refs/heads/dev"
+    - repository: Platform
+      name: ""
+      type: git
+      ref: "refs/heads/dev"
+    - repository: Powerbi-RLS
+      name: ""
+      type: git
+      ref: "refs/heads/dev"
+
+jobs:
+  - job: "SAST"
+    displayName: "SAST Scan"
+    pool:
+      name: "Azure Pipelines"
+    steps:
+      - checkout: self
+        enabled: false
+      - checkout: all-applications-ui
+        clean: true
+      - checkout: CloudCore-Hook
+        clean: true
+      - checkout: cs-cross-reference
+        clean: true
+      - checkout: Platform
+        clean: true
+      - checkout: Powerbi-RLS
+        clean: true
+
+      - task: CmdLine@2
+        displayName: "Dependency Install for Yarn.Lock"
+        inputs:
+          script: |
+            npm install --global yarn
+            yarn
+          workingDirectory: "all-applications-ui"
+      - task: PowerShell@2
+        displayName: "Removing Node_Modules folder"
+        inputs:
+          targetType: "inline"
+          script: 'remove-item -Path .\all-applications-ui\node_modules\ -recurse -force'
+
+      - task: UseDotNet@2
+        displayName: Ensure .NET 6
+        inputs:
+          packageType: "sdk"
+          version: "6.x"
+      - task: DotNetCoreCLI@2
+        inputs:
+          command: "restore"
+          projects: "**/*.csproj"
+        displayName: "Install .NET dependencies"
+
+      - task: DotNetCoreCLI@2
+        inputs:
+          command: "build"
+          projects: "**/*.csproj"
+          arguments: "--configuration Debug"
+        displayName: "Build .NET projects"
+
+      - task: PowerShell@2
+        displayName: "Package Artifacts"
+        inputs:
+          targetType: "inline"
+          script: "get-childitem -Include *.js, *.css, *.html, *.ts, *.tsx, *.json, *.pdb, *.dll, *.exe, *.lock -recurse | Compress-Archive -DestinationPath $(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip"
+
+      - task: PublishBuildArtifacts@1
+        inputs:
+          pathtoPublish: "$(Build.ArtifactStagingDirectory)"
+          artifactName: "CloudCodeScan"
+          publishLocation: "Container"
+
+      # TODO: Add the main modules to 'optargs'
+      - task: Veracode@3
+        displayName: "Veracode Static Analysis"
+        continueOnError: True
+        inputs:
+          ConnectionDetailsSelection: "Service Connection"
+          AnalysisService: "veracode-cloud core"
+          veracodeAppProfile: $(System.TeamProject)
+          version: $(Build.BuildId)
+          filepath: "$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip"
+          optargs: "-criticality high"
+          importResults: false
